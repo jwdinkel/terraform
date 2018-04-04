@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/terraform/configs"
 	"github.com/hashicorp/terraform/tfdiags"
 
 	"github.com/hashicorp/go-multierror"
@@ -55,7 +56,7 @@ type ContextOpts struct {
 	Destroy            bool
 	Diff               *Diff
 	Hooks              []Hook
-	Module             *module.Tree
+	Config             *configs.Config
 	Parallelism        int
 	State              *State
 	StateFutureAllowed bool
@@ -63,7 +64,7 @@ type ContextOpts struct {
 	Provisioners       map[string]ResourceProvisionerFactory
 	Shadow             bool
 	Targets            []string
-	Variables          map[string]interface{}
+	Variables          InputValues
 
 	// If non-nil, will apply as additional constraints on the provider
 	// plugins that will be requested from the provider resolver.
@@ -97,14 +98,14 @@ type Context struct {
 	diffLock   sync.RWMutex
 	hooks      []Hook
 	meta       *ContextMeta
-	module     *module.Tree
+	config     *configs.Config
 	sh         *stopHook
 	shadow     bool
 	state      *State
 	stateLock  sync.RWMutex
 	targets    []string
 	uiInput    UIInput
-	variables  map[string]interface{}
+	variables  InputValues
 
 	l                   sync.Mutex // Lock acquired during any task
 	parallelSem         Semaphore
@@ -119,15 +120,18 @@ type Context struct {
 
 // NewContext creates a new Context structure.
 //
-// Once a Context is creator, the pointer values within ContextOpts
-// should not be mutated in any way, since the pointers are copied, not
-// the values themselves.
-func NewContext(opts *ContextOpts) (*Context, error) {
-	// Validate the version requirement if it is given
-	if opts.Module != nil {
-		if err := CheckRequiredVersion(opts.Module); err != nil {
-			return nil, err
-		}
+// Once a Context is created, the caller should not access or mutate any of
+// the objects referenced (directly or indirectly) by the ContextOpts fields.
+//
+// If the returned diagnostics contains errors then the resulting context is
+// invalid and must not be used.
+func NewContext(opts *ContextOpts) (*Context, tfdiags.Diagnostics) {
+	diags := CheckCoreVersionRequirements(opts.Config)
+	// If version constraints are not met then we'll bail early since otherwise
+	// we're likely to just see a bunch of other errors related to
+	// incompatibilities, which could be overwhelming for the user.
+	if diags.HasErrors() {
+		return nil, diags
 	}
 
 	// Copy all the hooks and add our stop hook. We don't append directly
@@ -145,8 +149,9 @@ func NewContext(opts *ContextOpts) (*Context, error) {
 
 	// If our state is from the future, then error. Callers can avoid
 	// this error by explicitly setting `StateFutureAllowed`.
-	if err := CheckStateVersion(state); err != nil && !opts.StateFutureAllowed {
-		return nil, err
+	if stateDiags := CheckStateVersion(state, opts.StateFutureAllowed); stateDiags.HasErrors() {
+		diags = diags.Append(stateDiags)
+		return nil, diags
 	}
 
 	// Explicitly reset our state version to our current version so that
@@ -181,14 +186,15 @@ func NewContext(opts *ContextOpts) (*Context, error) {
 	var providers map[string]ResourceProviderFactory
 	if opts.ProviderResolver != nil {
 		var err error
-		deps := ModuleTreeDependencies(opts.Module, state)
+		deps := ConfigTreeDependencies(opts.Config, state)
 		reqd := deps.AllPluginRequirements()
 		if opts.ProviderSHA256s != nil && !opts.SkipProviderVerify {
 			reqd.LockExecutables(opts.ProviderSHA256s)
 		}
 		providers, err = resourceProviderFactories(opts.ProviderResolver, reqd)
 		if err != nil {
-			return nil, err
+			diags = diags.Append(err)
+			return nil, diags
 		}
 	} else {
 		providers = make(map[string]ResourceProviderFactory)
@@ -208,7 +214,7 @@ func NewContext(opts *ContextOpts) (*Context, error) {
 		diff:      diff,
 		hooks:     hooks,
 		meta:      opts.Meta,
-		module:    opts.Module,
+		config:    opts.Config,
 		shadow:    opts.Shadow,
 		state:     state,
 		targets:   opts.Targets,

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/terraform/tfdiags"
+
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/go-version"
@@ -2190,17 +2192,27 @@ func (s moduleStateSort) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
 
-// StateCompatible returns an error if the state is not compatible with the
-// current version of terraform.
-func CheckStateVersion(state *State) error {
+// CheckStateVersion returns error diagnostics if the state is not compatible
+// with the current version of Terraform Core.
+func CheckStateVersion(state *State, allowFuture bool) tfdiags.Diagnostics {
+	var diags tfdiags.Diagnostics
+
 	if state == nil {
-		return nil
+		return diags
 	}
 
-	if state.FromFutureTerraform() {
-		return fmt.Errorf(stateInvalidTerraformVersionErr, state.TFVersion)
+	if state.FromFutureTerraform() && !allowFuture {
+		diags = diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Incompatible Terraform state format",
+			fmt.Sprintf(
+				"For safety reasons, Terraform will not run operations against a state that was written by a future Terraform version. Your current version is %s, but the state requires at least %s. To proceed, upgrade Terraform to a suitable version.",
+				tfversion.String(), state.TFVersion,
+			),
+		))
 	}
-	return nil
+
+	return diags
 }
 
 const stateValidateErrMultiModule = `
@@ -2210,12 +2222,4 @@ This means that there are multiple entries in the "modules" field
 in your state file that point to the same module. This will cause Terraform
 to behave in unexpected and error prone ways and is invalid. Please back up
 and modify your state file manually to resolve this.
-`
-
-const stateInvalidTerraformVersionErr = `
-Terraform doesn't allow running any operations against a state
-that was written by a future Terraform version. The state is
-reporting it is written by Terraform '%s'
-
-Please run at least that version of Terraform to continue.
 `

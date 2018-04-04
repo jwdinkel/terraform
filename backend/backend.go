@@ -169,7 +169,7 @@ type Operation struct {
 	// behavior of the operation.
 	Destroy      bool
 	Targets      []string
-	Variables    map[string]interface{}
+	Variables    terraform.InputValues
 	AutoApprove  bool
 	DestroyForce bool
 

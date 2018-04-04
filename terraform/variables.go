@@ -8,7 +8,73 @@ import (
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/helper/hilmapstructure"
+	"github.com/hashicorp/terraform/tfdiags"
+	"github.com/zclconf/go-cty/cty"
 )
+
+// InputValue represents a value for a variable in the root module, provided
+// as part of the definition of an operation.
+type InputValue struct {
+	Value      cty.Value
+	SourceType ValueSourceType
+
+	// SourceRange provides source location information for values whose
+	// SourceType is either ValueFromConfig or ValueFromFile. It is not
+	// populated for other source types, and so should not be used.
+	SourceRange tfdiags.SourceRange
+}
+
+// ValueSourceType describes what broad category of source location provided
+// a particular value.
+type ValueSourceType rune
+
+const (
+	// ValueFromUnknown is the zero value of ValueSourceType and is not valid.
+	ValueFromUnknown ValueSourceType = 0
+
+	// ValueFromConfig indicates that a value came from a .tf or .tf.json file,
+	// e.g. the default value defined for a variable.
+	ValueFromConfig ValueSourceType = 'C'
+
+	// ValueFromFile indicates that a value came from a "values file", like
+	// a .tfvars file, either passed explicitly on the command line or
+	// implicitly loaded by naming convention.
+	ValueFromFile ValueSourceType = 'F'
+
+	// ValueFromCLIArg indicates that the value was provided directly in
+	// a CLI argument. The name of this argument is not recorded and so it must
+	// be inferred from context.
+	ValueFromCLIArg ValueSourceType = 'A'
+
+	// ValueFromEnvVar indicates that the value was provided via an environment
+	// variable. The name of the variable is not recorded and so it must be
+	// inferred from context.
+	ValueFromEnvVar ValueSourceType = 'E'
+
+	// ValueFromInput indicates that the value was provided at an interactive
+	// input prompt.
+	ValueFromInput ValueSourceType = 'I'
+)
+
+//go:generate stringer -type ValueSourceType
+
+// InputValues is a map of InputValue instances.
+type InputValues map[string]*InputValue
+
+// Override merges the given value maps with the receiver, overriding any
+// conflicting keys so that the latest definition wins.
+func (vv InputValues) Override(others ...InputValues) InputValues {
+	ret := make(InputValues)
+	for k, v := range vv {
+		ret[k] = v
+	}
+	for _, other := range others {
+		for k, v := range other {
+			ret[k] = v
+		}
+	}
+	return ret
+}
 
 // Variables returns the fully loaded set of variables to use with
 // ContextOpts and NewContext, loading any additional variables from
